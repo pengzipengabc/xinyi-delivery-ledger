@@ -17,6 +17,10 @@ const seedReceipts = [
 ];
 
 let receipts = loadReceipts();
+let scanImageUrl = null;
+let scanParsed = null;
+let scanWorker = null;
+let scanCancelled = false;
 const $ = (id) => document.getElementById(id);
 const money = (value) => new Intl.NumberFormat("zh-CN", {style:"currency",currency:"CNY",minimumFractionDigits:2}).format(Number(value)||0);
 const num = (value) => Math.round((Number(value)||0)*100)/100;
@@ -100,6 +104,174 @@ function updateLinesTotal(write=true){
 function updateFormTotals(){ $("formDifference").textContent=money(num($("receiptWritten").value-$("receiptCalculated").value)); }
 function checkDuplicate(){ const id=$("editingId").value; const no=$("receiptNo").value.trim(); $("duplicateWarning").hidden=!no||!receipts.some(r=>r.no===no&&r.id!==id); }
 
+function normalizeOcrText(text){
+  return String(text||"")
+    .replace(/[０-９]/g,c=>String.fromCharCode(c.charCodeAt(0)-65248))
+    .replace(/[ＯO〇○]/g,"0")
+    .replace(/[，,。·]/g,".")
+    .replace(/(\d)\s*[.．]\s*(\d)/g,"$1.$2")
+    .replace(/[ \t]+/g," ")
+    .replace(/\n{3,}/g,"\n\n")
+    .trim();
+}
+
+function parseOcrText(rawText){
+  const text=normalizeOcrText(rawText);
+  const lines=text.split(/\n+/).map(line=>line.trim()).filter(Boolean);
+  let date="";
+  const dateMatch=text.match(/(20\d{2})\s*[年/\-.]\s*(\d{1,2})\s*[月/\-.]\s*(\d{1,2})\s*日?/);
+  if(dateMatch){
+    const year=dateMatch[1],month=String(Math.min(12,Number(dateMatch[2]))).padStart(2,"0"),day=String(Math.min(31,Number(dateMatch[3]))).padStart(2,"0");
+    date=`${year}-${month}-${day}`;
+  }
+
+  let no="";
+  const labeledLine=lines.find(line=>/(送货单|N[O0])/i.test(line));
+  const labeledNo=labeledLine?.replace(/\s/g,"").match(/0{2,}\d{3,6}/);
+  const genericNo=text.replace(/\s/g,"").match(/(?:^|\D)(0{2,}\d{3,6})(?:\D|$)/m);
+  const noCandidate=(labeledNo?.[0]||genericNo?.[1]||"").replace(/\D/g,"");
+  if(noCandidate.length>=6&&noCandidate.length<=8)no=noCandidate;
+
+  const skipLine=/(送货单|地址|电话|传真|手机|收货单位|名称及规格|单位|数量|单价|金额|合计|备注|经手人|质量问题)/;
+  const items=[];
+  for(const line of lines){
+    if(skipLine.test(line))continue;
+    const tokens=[...line.matchAll(/\d+(?:\.\d+)?/g)];
+    if(tokens.length<2)continue;
+    const picked=tokens.length>=3?tokens.slice(-3):tokens.slice(-2);
+    const qty=Number(picked[0][0]),price=Number(picked[1][0]);
+    const stated=picked[2]?Number(picked[2][0]):null;
+    if(!Number.isFinite(qty)||!Number.isFinite(price)||qty<=0||price<=0||qty>100000||price>1000)continue;
+    if(stated!==null){const expected=qty*price;if(Math.abs(expected-stated)>Math.max(3,expected*.08))continue;}
+    let name=line.slice(0,picked[0].index).replace(/[|丨支个\s:：]+$/g,"").trim();
+    name=name.replace(/^[^0-9A-Za-z\u4e00-\u9fff]+/,"").trim()||"未识别品名";
+    if(name.length>24)name=name.slice(-24);
+    items.push({name,qty:num(qty),price:num(price)});
+  }
+
+  let written=0;
+  const totalLines=lines.filter(line=>/(合计|总计|￥|¥)/.test(line));
+  for(const line of totalLines.reverse()){
+    const values=[...line.matchAll(/\d+(?:\.\d+)?/g)].map(m=>Number(m[0])).filter(v=>v>=10&&v<1000000);
+    if(values.length){written=values.at(-1);break;}
+  }
+  const calculated=num(items.reduce((sum,item)=>sum+item.qty*item.price,0));
+  if(!written&&calculated)written=calculated;
+  return {text,date,no,written:num(written),calculated,items};
+}
+
+function setScanProgress(percent,status,hint){
+  const bounded=Math.max(0,Math.min(100,Math.round(percent)));
+  $("scanProgressBar").style.width=`${bounded}%`;
+  $("scanPercent").textContent=`${bounded}%`;
+  if(status)$("scanStatus").textContent=status;
+  if(hint)$("scanHint").textContent=hint;
+}
+
+function statusText(status){
+  return ({"loading tesseract core":"载入识别引擎","initializing tesseract":"初始化识别引擎","loading language traineddata":"载入中文模型","initializing api":"准备中文识别","recognizing text":"正在读取照片"})[status]||"正在本地识别";
+}
+
+function showScanResult(parsed){
+  scanParsed=parsed;
+  $("scanRawText").value=parsed.text;
+  const chips=[
+    {ok:!!parsed.date,text:parsed.date?`日期 ${parsed.date}`:"日期未识别"},
+    {ok:!!parsed.no,text:parsed.no?`单号 ${parsed.no}`:"单号未识别"},
+    {ok:parsed.items.length>0,text:parsed.items.length?`明细 ${parsed.items.length} 项`:"明细未识别"},
+    {ok:parsed.written>0,text:parsed.written?`手写合计 ${money(parsed.written)}`:"合计未识别"}
+  ];
+  $("scanSummary").innerHTML=chips.map(chip=>`<span class="${chip.ok?"":"missing"}">${escapeHtml(chip.text)}</span>`).join("");
+  $("scanResult").hidden=false;
+  $("useScanBtn").disabled=false;
+}
+
+async function preprocessImage(file){
+  const dataUrl=await new Promise((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(reader.result);reader.onerror=()=>reject(reader.error||new Error("无法读取照片"));reader.readAsDataURL(file)});
+  scanImageUrl=dataUrl;
+  $("scanPreview").src=dataUrl;
+  const image=new Image();
+  image.src=dataUrl;
+  await new Promise((resolve,reject)=>{image.onload=resolve;image.onerror=()=>reject(new Error("无法解码这张照片，请尝试截图后重新选择"))});
+  const maxSide=1900;
+  const scale=Math.min(1,maxSide/Math.max(image.naturalWidth,image.naturalHeight));
+  const canvas=document.createElement("canvas");
+  canvas.width=Math.max(1,Math.round(image.naturalWidth*scale));
+  canvas.height=Math.max(1,Math.round(image.naturalHeight*scale));
+  const ctx=canvas.getContext("2d",{willReadFrequently:true});
+  ctx.drawImage(image,0,0,canvas.width,canvas.height);
+  const pixels=ctx.getImageData(0,0,canvas.width,canvas.height);
+  const data=pixels.data;
+  for(let i=0;i<data.length;i+=4){
+    const gray=.299*data[i]+.587*data[i+1]+.114*data[i+2];
+    const value=Math.max(0,Math.min(255,(gray-128)*1.35+128));
+    data[i]=data[i+1]=data[i+2]=value;
+  }
+  ctx.putImageData(pixels,0,0);
+  return canvas;
+}
+
+async function recognizeReceipt(file){
+  scanCancelled=false; scanParsed=null;
+  $("scanResult").hidden=true; $("useScanBtn").disabled=true;
+  setScanProgress(2,"正在准备照片…","照片只在本机处理，不会上传服务器。");
+  showSheet($("scanSheet"),$("scanBackdrop"));
+  try{
+    if(!window.Tesseract)throw new Error("离线识别组件未加载，请刷新网页后重试。");
+    const canvas=await preprocessImage(file);
+    setScanProgress(6,"正在载入离线模型…","第一次需要下载约 25MB，之后浏览器会自动缓存。");
+    const base=new URL("./",location.href);
+    scanWorker=await Tesseract.createWorker("chi_sim",1,{
+      workerPath:new URL("vendor/tesseract/worker.min.js",base).href,
+      corePath:new URL("vendor/tesseract-core/",base).href,
+      langPath:new URL("vendor/lang-data/",base).href,
+      workerBlobURL:false,
+      logger(message){
+        const phase=message.status||"";
+        const phaseBase=phase.includes("recognizing")?55:phase.includes("language")?28:phase.includes("initializing api")?45:12;
+        const phaseRange=phase.includes("recognizing")?43:phase.includes("language")?18:12;
+        setScanProgress(phaseBase+(message.progress||0)*phaseRange,statusText(phase));
+      }
+    });
+    await scanWorker.setParameters({tessedit_pageseg_mode:"6",preserve_interword_spaces:"1",user_defined_dpi:"200"});
+    const result=await scanWorker.recognize(canvas);
+    await scanWorker.terminate(); scanWorker=null;
+    if(scanCancelled)return;
+    const parsed=parseOcrText(result.data.text);
+    setScanProgress(100,"识别完成","请核对识别结果，确认无误后再保存。");
+    showScanResult(parsed);
+  }catch(error){
+    console.error("本地OCR识别失败",error);
+    if(scanWorker){try{await scanWorker.terminate()}catch{}scanWorker=null;}
+    if(scanCancelled)return;
+    const message=error?.message||String(error||"")||"请重新选择一张清晰、正面拍摄的照片。";
+    setScanProgress(0,"识别失败",message);
+    $("scanResult").hidden=true; $("useScanBtn").disabled=true;
+  }
+}
+
+async function closeScan(){
+  scanCancelled=true;
+  if(scanWorker){try{await scanWorker.terminate()}catch{}scanWorker=null;}
+  hideSheet($("scanSheet"),$("scanBackdrop"));
+  $("scanPreview").removeAttribute("src"); scanImageUrl=null;
+}
+
+function useScanResult(){
+  const parsed=parseOcrText($("scanRawText").value);
+  closeScan();
+  openForm();
+  if(parsed.date)$("receiptDate").value=parsed.date;
+  $("receiptNo").value=parsed.no||"";
+  $("receiptWritten").value=parsed.written?parsed.written.toFixed(2):"";
+  $("receiptCalculated").value=parsed.calculated?parsed.calculated.toFixed(2):"";
+  $("receiptNote").value="照片本地识别录入，请保存前核对原单";
+  $("lineItems").innerHTML="";
+  parsed.items.forEach(addLineItem);
+  updateLinesTotal(parsed.items.length>0);
+  updateFormTotals(); checkDuplicate();
+}
+
 $("receiptForm").addEventListener("submit",e=>{
   e.preventDefault(); const id=$("editingId").value; const no=$("receiptNo").value.trim();
   if(receipts.some(r=>r.no===no&&r.id!==id)){showToast("单号重复，请先核对原记录");return;}
@@ -122,6 +294,12 @@ $("addLineBtn").addEventListener("click",()=>addLineItem()); $("receiptWritten")
 $("dismissNotice").addEventListener("click",()=>{$("storageNotice").remove();localStorage.setItem("xinyi-notice-dismissed","1")});
 $("exportJsonBtn").addEventListener("click",exportJson); $("exportCsvBtn").addEventListener("click",exportCsv); $("importBtn").addEventListener("click",()=>$("importFile").click()); $("importFile").addEventListener("change",e=>e.target.files[0]&&importJson(e.target.files[0]));
 $("installGuideBtn").addEventListener("click",()=>alert("在 iPhone Safari 中：点底部的“分享”按钮 → 向下滑动 → 选择“添加到主屏幕” → 点“添加”。"));
+$("scanBtn").addEventListener("click",()=>$("scanFile").click());
+$("rescanBtn").addEventListener("click",()=>$("scanFile").click());
+$("closeScanBtn").addEventListener("click",closeScan);
+$("scanBackdrop").addEventListener("click",closeScan);
+$("useScanBtn").addEventListener("click",useScanResult);
+$("scanFile").addEventListener("change",event=>{const file=event.target.files?.[0];if(file)recognizeReceipt(file).finally(()=>{event.target.value=""})});
 if(localStorage.getItem("xinyi-notice-dismissed"))$("storageNotice").hidden=true;
 if("serviceWorker" in navigator)window.addEventListener("load",()=>navigator.serviceWorker.register("./service-worker.js").catch(()=>{}));
 render();

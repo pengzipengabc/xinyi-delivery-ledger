@@ -32,6 +32,16 @@
       <button id="dismissNotice" aria-label="关闭提示">×</button>
     </section>
 
+    <section class="scan-card" aria-labelledby="scanTitle">
+      <div class="scan-card__copy">
+        <p class="eyebrow eyebrow--dark">免费本地识别</p>
+        <h2 id="scanTitle">拍照录入送货单</h2>
+        <p>照片只在当前手机处理，不会上传服务器。识别后请核对再保存。</p>
+      </div>
+      <button class="scan-btn" id="scanBtn" type="button"><span aria-hidden="true">▣</span> 拍照 / 选照片</button>
+      <input id="scanFile" type="file" accept="image/*" hidden>
+    </section>
+
     <section class="stats" aria-label="汇总数据">
       <article class="stat stat--main">
         <span>复算应付总计</span>
@@ -81,6 +91,30 @@
   </main>
 
   <button class="fab" id="addBtn" aria-label="新增送货单"><span>＋</span> 新增送货单</button>
+
+  <div class="sheet-backdrop" id="scanBackdrop" hidden></div>
+  <section class="bottom-sheet scan-sheet" id="scanSheet" aria-hidden="true" aria-labelledby="scanSheetTitle">
+    <div class="sheet-handle"></div>
+    <div class="sheet-header">
+      <div><p class="eyebrow eyebrow--dark">照片自动录入</p><h2 id="scanSheetTitle">识别送货单</h2></div>
+      <button class="close-btn" id="closeScanBtn" aria-label="关闭">×</button>
+    </div>
+    <div class="scan-preview-wrap"><img id="scanPreview" class="scan-preview" alt="待识别的送货单照片"></div>
+    <div class="scan-progress" id="scanProgressBox">
+      <div class="scan-progress__top"><strong id="scanStatus">正在准备识别…</strong><span id="scanPercent">0%</span></div>
+      <div class="progress-track"><span id="scanProgressBar"></span></div>
+      <p id="scanHint">第一次识别需要载入约 25MB 的离线识别模型，请保持页面开启。</p>
+    </div>
+    <div id="scanResult" class="scan-result" hidden>
+      <div class="scan-summary" id="scanSummary"></div>
+      <label>识别原文（可修改）<textarea id="scanRawText" rows="7" spellcheck="false"></textarea></label>
+      <p class="scan-caution">手写内容可能识别错误，请务必核对数量、单价和金额。</p>
+    </div>
+    <div class="scan-actions">
+      <button class="secondary-btn" id="rescanBtn" type="button">重新选照片</button>
+      <button class="primary-btn" id="useScanBtn" type="button" disabled>填入送货单</button>
+    </div>
+  </section>
 
   <div class="sheet-backdrop" id="formBackdrop" hidden></div>
   <section class="bottom-sheet" id="receiptFormSheet" aria-hidden="true" aria-labelledby="formTitle">
@@ -139,6 +173,7 @@
   </section>
 
   <div class="toast" id="toast" role="status" aria-live="polite"></div>
+  <script src="./vendor/tesseract/tesseract.min.js"></script>
   <script src="./app.js"></script>
 </body>
 </html>

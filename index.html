@@ -1,0 +1,144 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#12324a">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="信亿送货单">
+  <meta name="format-detection" content="telephone=no">
+  <title>信亿厂送货单</title>
+  <link rel="icon" href="./icon.svg" type="image/svg+xml">
+  <link rel="manifest" href="./manifest.webmanifest">
+  <link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+  <header class="hero">
+    <div class="hero__inner">
+      <div>
+        <p class="eyebrow">送货单对账</p>
+        <h1>信亿厂送货单</h1>
+        <p class="hero__sub">按日期记录、自动复算、及时发现差额</p>
+      </div>
+      <button class="icon-btn" id="moreBtn" aria-label="打开更多操作">•••</button>
+    </div>
+  </header>
+
+  <main>
+    <section class="notice" id="storageNotice">
+      <span class="notice__dot"></span>
+      <span>数据保存在当前手机浏览器，请定期导出备份。</span>
+      <button id="dismissNotice" aria-label="关闭提示">×</button>
+    </section>
+
+    <section class="stats" aria-label="汇总数据">
+      <article class="stat stat--main">
+        <span>复算应付总计</span>
+        <strong id="calcTotal">¥0.00</strong>
+        <small id="receiptCount">0 张独立单据</small>
+      </article>
+      <article class="stat">
+        <span>单据手写合计</span>
+        <strong id="writtenTotal">¥0.00</strong>
+      </article>
+      <article class="stat stat--warn">
+        <span>净多计金额</span>
+        <strong id="differenceTotal">¥0.00</strong>
+      </article>
+    </section>
+
+    <section class="panel controls">
+      <label class="search">
+        <span aria-hidden="true">⌕</span>
+        <input id="searchInput" type="search" placeholder="搜索单号或备注" autocomplete="off">
+      </label>
+      <div class="filters">
+        <select id="monthFilter" aria-label="按月份筛选"><option value="all">全部月份</option></select>
+        <select id="statusFilter" aria-label="按状态筛选">
+          <option value="all">全部状态</option>
+          <option value="ok">金额一致</option>
+          <option value="error">金额异常</option>
+        </select>
+      </div>
+    </section>
+
+    <section class="list-section">
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow eyebrow--dark">时间顺序</p>
+          <h2>送货单记录</h2>
+        </div>
+        <span id="visibleCount" class="count-pill">0 张</span>
+      </div>
+      <div id="receiptList" class="receipt-list"></div>
+      <div id="emptyState" class="empty" hidden>
+        <div class="empty__icon">⌕</div>
+        <h3>没有找到记录</h3>
+        <p>请调整筛选条件，或新增一张送货单。</p>
+      </div>
+    </section>
+  </main>
+
+  <button class="fab" id="addBtn" aria-label="新增送货单"><span>＋</span> 新增送货单</button>
+
+  <div class="sheet-backdrop" id="formBackdrop" hidden></div>
+  <section class="bottom-sheet" id="receiptFormSheet" aria-hidden="true" aria-labelledby="formTitle">
+    <div class="sheet-handle"></div>
+    <div class="sheet-header">
+      <div>
+        <p class="eyebrow eyebrow--dark">记录资料</p>
+        <h2 id="formTitle">新增送货单</h2>
+      </div>
+      <button class="close-btn" id="closeFormBtn" aria-label="关闭">×</button>
+    </div>
+    <form id="receiptForm">
+      <input type="hidden" id="editingId">
+      <div class="form-grid">
+        <label>日期<input id="receiptDate" type="date" required></label>
+        <label>送货单号<input id="receiptNo" type="text" inputmode="numeric" placeholder="例如 0004252" required></label>
+      </div>
+      <div id="duplicateWarning" class="inline-warning" hidden>这个单号已经存在，请确认是否重复。</div>
+      <div class="form-grid">
+        <label>单据手写合计（元）<input id="receiptWritten" type="number" min="0" step="0.01" inputmode="decimal" required></label>
+        <label>复算合计（元）<input id="receiptCalculated" type="number" min="0" step="0.01" inputmode="decimal" required></label>
+      </div>
+      <div class="computed-strip">
+        <span>差额（手写－复算）</span>
+        <strong id="formDifference">¥0.00</strong>
+      </div>
+
+      <div class="line-items-head">
+        <div><h3>明细计算</h3><p>可选；填写数量和单价后自动更新复算合计</p></div>
+        <button type="button" class="small-btn" id="addLineBtn">＋ 添加一项</button>
+      </div>
+      <div id="lineItems" class="line-items"></div>
+
+      <label>备注<textarea id="receiptNote" rows="3" placeholder="例如：单号被遮挡、重复照片等"></textarea></label>
+      <div class="form-actions">
+        <button type="button" class="danger-btn" id="deleteBtn" hidden>删除记录</button>
+        <button type="submit" class="primary-btn">保存送货单</button>
+      </div>
+    </form>
+  </section>
+
+  <div class="sheet-backdrop" id="menuBackdrop" hidden></div>
+  <section class="bottom-sheet bottom-sheet--menu" id="menuSheet" aria-hidden="true" aria-labelledby="menuTitle">
+    <div class="sheet-handle"></div>
+    <div class="sheet-header">
+      <div><p class="eyebrow eyebrow--dark">数据管理</p><h2 id="menuTitle">更多操作</h2></div>
+      <button class="close-btn" id="closeMenuBtn" aria-label="关闭">×</button>
+    </div>
+    <div class="menu-list">
+      <button id="exportJsonBtn"><span>备份</span><strong>导出完整备份</strong><small>保存为 JSON，可恢复明细</small></button>
+      <button id="exportCsvBtn"><span>表格</span><strong>导出 CSV</strong><small>可用 Excel 打开</small></button>
+      <button id="importBtn"><span>恢复</span><strong>导入备份</strong><small>从之前导出的 JSON 恢复</small></button>
+      <button id="installGuideBtn"><span>手机</span><strong>添加到主屏幕</strong><small>像 App 一样从桌面打开</small></button>
+    </div>
+    <input id="importFile" type="file" accept="application/json,.json" hidden>
+  </section>
+
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+  <script src="./app.js"></script>
+</body>
+</html>
